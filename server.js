@@ -1,15 +1,15 @@
 
 import express from 'express';
+import apiRouter from './app.js';
 
 const app = express();
 
-// Parse incoming JSON requests (maximum 10 KB).
 app.use(express.json({ limit: '10kb' }));
 
-// Serve the existing frontend.
 app.use(express.static('public'));
 
-// Health-check API route.
+app.use('/api', apiRouter);
+
 app.get('/api/health', (req, res) => {
     res.json({ ok: true });
 });
