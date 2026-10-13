@@ -1,5 +1,21 @@
+
 import express from 'express';
+
 const app = express();
+
+// Parse incoming JSON requests (maximum 10 KB).
+app.use(express.json({ limit: '10kb' }));
+
+// Serve the existing frontend.
 app.use(express.static('public'));
+
+// Health-check API route.
+app.get('/api/health', (req, res) => {
+    res.json({ ok: true });
+});
+
 const port = Number(process.env.PORT || 3000);
-app.listen(port, () => console.log(`Open http://localhost:${port}`));
+
+app.listen(port, () => {
+    console.log(`Open http://localhost:${port}`);
+});
