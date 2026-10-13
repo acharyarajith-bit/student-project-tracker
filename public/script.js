@@ -1,4 +1,3 @@
-
 const form = document.querySelector('#project-form');
 const nameInput = document.querySelector('#name');
 const statusInput = document.querySelector('#status');
@@ -9,16 +8,22 @@ const cancelButton = document.querySelector('#cancel-button');
 const formTitle = document.querySelector('#form-title');
 const message = document.querySelector('#message');
 
-const STORAGE_KEY = 'workshop-projects-v1';
-
 let projects = [];
 let editingId = null;
-
-// Prevent malformed saved data from being overwritten automatically.
-let storageWritable = true;
+let busy = false;
 
 function showMessage(text) {
     message.textContent = text;
+}
+
+function setBusy(value) {
+    busy = value;
+    saveButton.disabled = value;
+    cancelButton.disabled = value;
+
+    projectList.querySelectorAll('button').forEach(button => {
+        button.disabled = value;
+    });
 }
 
 function resetForm() {
@@ -30,80 +35,60 @@ function resetForm() {
     formTitle.textContent = 'Add a Project';
 }
 
-function isValidProjects(data) {
-    return Array.isArray(data) && data.every(project =>
-        project !== null &&
-        typeof project === 'object' &&
-        !Array.isArray(project) &&
-        typeof project.id === 'string' &&
-        project.id.length > 0 &&
-        typeof project.name === 'string' &&
-        project.name.trim().length > 0 &&
-        typeof project.status === 'string'
-    );
-}
-
-function loadProjects() {
-    let savedText;
+async function apiRequest(url, options = {}) {
+    let response;
 
     try {
-        savedText = localStorage.getItem(STORAGE_KEY);
-    } catch (error) {
-        storageWritable = false;
-        showMessage(
-            'Could not read saved projects from browser storage. ' +
-            'Changes cannot be saved.'
+        response = await fetch(url, options);
+    } catch {
+        throw new Error(
+            'Could not connect to the server. Check that your server is running.'
         );
-        return;
     }
 
-    // No saved data yet: start with an empty collection.
-    if (savedText === null) {
-        projects = [];
-        return;
-    }
+    if (!response.ok) {
+        let errorMessage = `Request failed (${response.status}).`;
 
-    try {
-        const savedProjects = JSON.parse(savedText);
-
-        if (!isValidProjects(savedProjects)) {
-            storageWritable = false;
-            showMessage(
-                'Saved project data is invalid. It has not been ' +
-                'overwritten. Please ask your instructor for help.'
-            );
-            return;
+        try {
+            const data = await response.json();
+            if (data.error) {
+                errorMessage = data.error;
+            }
+        } catch {
+            // Keep the default HTTP error message.
         }
 
-        projects = savedProjects;
-    } catch (error) {
-        storageWritable = false;
-        showMessage(
-            'Saved project data could not be read because it is ' +
-            'malformed. It has not been overwritten. ' +
-            'Please ask your instructor for help.'
-        );
+        throw new Error(errorMessage);
     }
+
+    if (response.status === 204) {
+        return null;
+    }
+
+    return response.json();
 }
 
-function saveProjects() {
-    if (!storageWritable) {
-        showMessage(
-            'Changes are only temporary because saved data cannot ' +
-            'be safely accessed or updated.'
-        );
-        return false;
-    }
+async function loadProjects() {
+    showMessage('Loading projects...');
 
     try {
-        const savedText = JSON.stringify(projects);
-        localStorage.setItem(STORAGE_KEY, savedText);
+        const data = await apiRequest('/api/projects');
+
+        if (!Array.isArray(data)) {
+            throw new Error('The server returned an invalid project list.');
+        }
+
+        projects = data;
+        renderProjects();
+        showMessage(
+            projects.length
+                ? `Loaded ${projects.length} project(s).`
+                : 'No projects added yet.'
+        );
+
         return true;
     } catch (error) {
-        showMessage(
-            'The change was made for this session, but could not ' +
-            'be saved in browser storage.'
-        );
+        showMessage(`Error loading projects: ${error.message}`);
         return false;
     }
 }
@@ -111,22 +96,23 @@ function saveProjects() {
 function renderProjects() {
     projectList.replaceChildren();
 
-    projects.forEach(project => {
-        const projectItem = document.createElement('li');
+    for (const project of projects) {
+        const item = document.createElement('li');
 
-        const projectName = document.createElement('h3');
-        projectName.textContent = project.name;
+        const heading = document.createElement('h3');
+        heading.textContent = project.name;
 
-        const projectStatus = document.createElement('p');
-        projectStatus.textContent = `Status: ${project.status}`;
+        const status = document.createElement('p');
+        status.textContent = `Status: ${project.status}`;
 
         const editButton = document.createElement('button');
         editButton.type = 'button';
         editButton.textContent = 'Edit';
 
         editButton.addEventListener('click', () => {
-            editingId = project.id;
+            if (busy) return;
 
+            editingId = project.id;
             nameInput.value = project.name;
             statusInput.value = project.status;
 
@@ -135,57 +121,64 @@ function renderProjects() {
             formTitle.textContent = 'Edit Project';
 
             nameInput.focus();
-            showMessage('');
+            showMessage(`Editing "${project.name}".`);
         });
 
         const deleteButton = document.createElement('button');
         deleteButton.type = 'button';
         deleteButton.textContent = 'Delete';
 
-        deleteButton.addEventListener('click', () => {
+        deleteButton.addEventListener('click', async () => {
+            if (busy) return;
+
             const confirmed = window.confirm(
                 `Are you sure you want to delete "${project.name}"?`
             );
 
-            if (!confirmed) {
-                return;
-            }
+            if (!confirmed) return;
 
-            if (editingId === project.id) {
-                resetForm();
-            }
-
-            const index = projects.findIndex(
-                item => item.id === project.id
-            );
-
-            if (index !== -1) {
-                projects.splice(index, 1);
-                saveProjects();
-                renderProjects();
-            }
+            await deleteProject(project);
         });
 
-        projectItem.append(
-            projectName,
-            projectStatus,
-            editButton,
-            deleteButton
-        );
-
-        projectList.appendChild(projectItem);
-    });
+        item.append(heading, status, editButton, deleteButton);
+        projectList.appendChild(item);
+    }
 
     emptyState.hidden = projects.length > 0;
 }
 
-// Load saved records before displaying the list.
-loadProjects();
-renderProjects();
+async function deleteProject(project) {
+    setBusy(true);
+    showMessage(`Deleting "${project.name}"...`);
 
-// One submit listener handles both Add and Edit.
-form.addEventListener('submit', event => {
+    try {
+        await apiRequest(
+            `/api/projects/${encodeURIComponent(project.id)}`,
+            { method: 'DELETE' }
+        );
+
+        if (String(editingId) === String(project.id)) {
+            resetForm();
+        }
+
+        const loaded = await loadProjects();
+
+        if (loaded) {
+            showMessage(`"${project.name}" deleted successfully.`);
+        }
+    } catch (error) {
+        showMessage(`Could not delete project: ${error.message}`);
+    } finally {
+        setBusy(false);
+        renderProjects();
+    }
+}
+
+// One submit listener handles both creating and editing.
+form.addEventListener('submit', async event => {
     event.preventDefault();
+
+    if (busy) return;
 
     const name = nameInput.value.trim();
     const status = statusInput.value;
@@ -196,50 +189,69 @@ form.addEventListener('submit', event => {
         return;
     }
 
-    // Do not overwrite malformed or inaccessible saved data.
-    if (!storageWritable) {
-        showMessage(
-            'Cannot safely save changes because browser storage ' +
-            'could not be loaded. Please ask your instructor for help.'
-        );
+    if (name.length > 80) {
+        showMessage('Project name must be 80 characters or fewer.');
+        nameInput.focus();
         return;
     }
 
-    if (editingId !== null) {
-        const project = projects.find(
-            item => item.id === editingId
-        );
+    if (!['Planned', 'In Progress', 'Completed'].includes(status)) {
+        showMessage('Please select a valid project status.');
+        return;
+    }
 
-        if (!project) {
-            resetForm();
-            renderProjects();
-            showMessage('Project not found. Please try again.');
-            return;
-        }
+    const wasEditing = editingId !== null;
+    const currentId = editingId;
 
-        // Update the existing record, keeping its ID.
-        project.name = name;
-        project.status = status;
-    } else {
-        projects.push({
-            id: crypto.randomUUID(),
-            name: name,
-            status: status
+    // Prevent duplicate submissions while a request is in progress.
+    setBusy(true);
+    showMessage(wasEditing ? 'Saving changes...' : 'Adding project...');
+
+    try {
+        const url = wasEditing
+            ? `/api/projects/${encodeURIComponent(currentId)}`
+            : '/api/projects';
+
+        await apiRequest(url, {
+            method: wasEditing ? 'PUT' : 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ name, status })
         });
-    }
 
-    const saved = saveProjects();
+        // Only reset the form after the server accepts the mutation.
+        resetForm();
 
-    resetForm();
-    renderProjects();
+        const loaded = await loadProjects();
 
-    if (saved) {
-        showMessage('Projects saved successfully.');
+        if (loaded) {
+            showMessage(
+                wasEditing
+                    ? 'Project updated successfully.'
+                    : 'Project added successfully.'
+            );
+        }
+    } catch (error) {
+        // Keep the entered values so the user can retry.
+        showMessage(`Could not save project: ${error.message}`);
+    } finally {
+        setBusy(false);
+        renderProjects();
     }
 });
 
-// Cancel edit without saving the unfinished form values.
+// Cancel an edit without sending an API request.
 cancelButton.addEventListener('click', () => {
+    if (busy) return;
+
     resetForm();
-    showMessage('');
+    showMessage('Edit cancelled.');
 });
+
+setBusy(true);
+loadProjects().finally(() => {
+    setBusy(false);
+    renderProjects();
+});
+
