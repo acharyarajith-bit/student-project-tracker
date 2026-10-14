@@ -1,3 +1,4 @@
+
 const form = document.querySelector('#project-form');
 const nameInput = document.querySelector('#name');
 const statusInput = document.querySelector('#status');
@@ -11,6 +12,7 @@ const message = document.querySelector('#message');
 let projects = [];
 let editingId = null;
 let busy = false;
+let projectsLoaded = false;
 
 function showMessage(text) {
     message.textContent = text;
@@ -29,7 +31,6 @@ function setBusy(value) {
 function resetForm() {
     form.reset();
     editingId = null;
-
     saveButton.textContent = 'Add Project';
     cancelButton.hidden = true;
     formTitle.textContent = 'Add a Project';
@@ -79,7 +80,9 @@ async function loadProjects() {
         }
 
         projects = data;
+        projectsLoaded = true;
         renderProjects();
+
         showMessage(
             projects.length
                 ? `Loaded ${projects.length} project(s).`
@@ -89,6 +92,7 @@ async function loadProjects() {
         return true;
     } catch (error) {
         showMessage(`Error loading projects: ${error.message}`);
+        renderProjects();
         return false;
     }
 }
@@ -108,6 +112,7 @@ function renderProjects() {
         const editButton = document.createElement('button');
         editButton.type = 'button';
         editButton.textContent = 'Edit';
+        editButton.disabled = busy;
 
         editButton.addEventListener('click', () => {
             if (busy) return;
@@ -127,6 +132,7 @@ function renderProjects() {
         const deleteButton = document.createElement('button');
         deleteButton.type = 'button';
         deleteButton.textContent = 'Delete';
+        deleteButton.disabled = busy;
 
         deleteButton.addEventListener('click', async () => {
             if (busy) return;
@@ -135,7 +141,7 @@ function renderProjects() {
                 `Are you sure you want to delete "${project.name}"?`
             );
 
-            if (!confirmed) return;
+            if (!confirmed || busy) return;
 
             await deleteProject(project);
         });
@@ -144,10 +150,13 @@ function renderProjects() {
         projectList.appendChild(item);
     }
 
-    emptyState.hidden = projects.length > 0;
+    // Show an empty list only after a successful GET request.
+    emptyState.hidden = !projectsLoaded || projects.length > 0;
 }
 
 async function deleteProject(project) {
+    if (busy) return;
+
     setBusy(true);
     showMessage(`Deleting "${project.name}"...`);
 
@@ -157,14 +166,26 @@ async function deleteProject(project) {
             { method: 'DELETE' }
         );
 
+        // The server confirmed deletion.
+        projects = projects.filter(
+            item => String(item.id) !== String(project.id)
+        );
+
         if (String(editingId) === String(project.id)) {
             resetForm();
         }
 
+        renderProjects();
+
+        // Reload the authoritative server collection.
         const loaded = await loadProjects();
 
         if (loaded) {
             showMessage(`"${project.name}" deleted successfully.`);
+        } else {
+            showMessage(
+                `"${project.name}" was deleted, but the list could not be refreshed.`
+            );
         }
     } catch (error) {
         showMessage(`Could not delete project: ${error.message}`);
@@ -174,7 +195,6 @@ async function deleteProject(project) {
     }
 }
 
-// One submit listener handles both creating and editing.
 form.addEventListener('submit', async event => {
     event.preventDefault();
 
@@ -203,7 +223,6 @@ form.addEventListener('submit', async event => {
     const wasEditing = editingId !== null;
     const currentId = editingId;
 
-    // Prevent duplicate submissions while a request is in progress.
     setBusy(true);
     showMessage(wasEditing ? 'Saving changes...' : 'Adding project...');
 
@@ -220,7 +239,7 @@ form.addEventListener('submit', async event => {
             body: JSON.stringify({ name, status })
         });
 
-        // Only reset the form after the server accepts the mutation.
+        // The mutation succeeded, so it is safe to reset the form.
         resetForm();
 
         const loaded = await loadProjects();
@@ -231,9 +250,15 @@ form.addEventListener('submit', async event => {
                     ? 'Project updated successfully.'
                     : 'Project added successfully.'
             );
+        } else {
+            showMessage(
+                wasEditing
+                    ? 'Project updated, but the list could not be refreshed.'
+                    : 'Project added, but the list could not be refreshed.'
+            );
         }
     } catch (error) {
-        // Keep the entered values so the user can retry.
+        // Preserve the user's input after a failed save.
         showMessage(`Could not save project: ${error.message}`);
     } finally {
         setBusy(false);
@@ -241,7 +266,6 @@ form.addEventListener('submit', async event => {
     }
 });
 
-// Cancel an edit without sending an API request.
 cancelButton.addEventListener('click', () => {
     if (busy) return;
 
@@ -250,8 +274,8 @@ cancelButton.addEventListener('click', () => {
 });
 
 setBusy(true);
+
 loadProjects().finally(() => {
     setBusy(false);
     renderProjects();
 });
-
